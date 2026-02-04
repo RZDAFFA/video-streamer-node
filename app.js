@@ -68,6 +68,38 @@ function sanitizeFilename(filename) {
     return filename.replace(/[<>:"/\\|?*]/g, '_').substring(0, 100);
 }
 
+function mergeVideos(inputFiles, mergedOutput, callback) {
+    const listFile = mergedOutput + '.txt';
+
+    const content = inputFiles
+        .map(f => `file '${path.resolve(f)}'`)
+        .join('\n');
+
+    fs.writeFileSync(listFile, content);
+
+    const cmd = [
+        '-y',
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', listFile,
+        '-c', 'copy',
+        mergedOutput
+    ];
+
+    console.log('🔗 Merging videos:\nffmpeg ' + cmd.join(' '));
+
+    const proc = spawn('ffmpeg', cmd);
+
+    proc.stderr.on('data', d => console.error('[merge]', d.toString()));
+
+    proc.on('exit', code => {
+        fs.unlinkSync(listFile);
+        callback(code === 0);
+    });
+}
+
+
+
 // Auto-delete old segments function
 function setupSegmentCleaner(streamId, outputPath) {
     const cleanerInterval = setInterval(() => {
@@ -299,7 +331,8 @@ app.get('/', (req, res) => {
                 </div>
                 <div class="form-group">
                     <label for="file">Select Video:</label>
-                    <input type="file" name="file" id="file" accept="video/*" required>
+                    <input type="file" name="file" id="file" accept="video/*" multiple required>
+                    <small>Upload 2 video (urutan = urutan gabung)</small>
                 </div>
                 <button type="submit" class="btn btn-primary">📤 Upload and Start Stream</button>
             </form>
@@ -488,94 +521,173 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Upload endpoint
-app.post('/upload', upload.single('file'), (req, res) => {
+// // Upload endpoint
+// app.post('/upload', upload.single('file'), (req, res) => {
+//     try {
+//         const { name } = req.body;
+//         const file = req.file;
+
+//         if (!name || !name.trim()) {
+//             return res.status(400).json({ error: 'Stream name cannot be empty' });
+//         }
+
+//         if (!file) {
+//             return res.status(400).json({ error: 'No file uploaded' });
+//         }
+
+//         // Check concurrent stream limit
+//         const activeStreamCount = Object.keys(activeStreams).length;
+//         if (activeStreamCount >= config.maxConcurrentStreams) {
+//             return res.status(429).json({
+//                 error: `Maximum ${config.maxConcurrentStreams} concurrent streams allowed. Please stop a stream first.`
+//             });
+//         }
+
+//         const streamId = `${sanitizeFilename(name)}_${uuidv4().substring(0, 8)}`;
+//         const inputPath = file.path;
+//         const outputPath = path.join(config.outputFolder, streamId);
+
+//         // Create output directory
+//         if (fs.existsSync(outputPath)) {
+//             fs.rmSync(outputPath, { recursive: true, force: true });
+//         }
+//         fs.mkdirSync(outputPath, { recursive: true });
+
+//         // Start FFmpeg process
+//         const ffmpegProcess = startFFmpegStream(inputPath, outputPath);
+
+//         activeStreams[streamId] = {
+//             process: ffmpegProcess,
+//             outputPath: outputPath,
+//             inputPath: inputPath,
+//             startTime: Date.now(),
+//             cleanerInterval: null
+//         };
+
+//         // Setup automatic segment cleaner
+//         setTimeout(() => {
+//             setupSegmentCleaner(streamId, outputPath);
+//         }, 30000); // Start cleaning after 30 seconds
+
+//         ffmpegProcess.on('error', (error) => {
+//             console.error(`FFmpeg error for ${streamId}:`, error);
+//             if (activeStreams[streamId] && activeStreams[streamId].cleanerInterval) {
+//                 clearInterval(activeStreams[streamId].cleanerInterval);
+//             }
+//             delete activeStreams[streamId];
+//         });
+
+//         ffmpegProcess.on('exit', (code) => {
+//             console.log(`FFmpeg process for ${streamId} exited with code ${code}`);
+//             if (activeStreams[streamId]) {
+//                 if (activeStreams[streamId].cleanerInterval) {
+//                     clearInterval(activeStreams[streamId].cleanerInterval);
+//                 }
+//                 delete activeStreams[streamId];
+//             }
+//         });
+
+//         // Schedule cleanup of input file
+//         cleanupInputFile(inputPath);
+
+//         const streamUrl = `/output/${streamId}/index.m3u8`;
+//         console.log(`🔄 Loop stream started: ${streamId} (${activeStreamCount + 1}/${config.maxConcurrentStreams} active)`);
+
+//         res.json({
+//             stream_id: streamId,
+//             stream_url: streamUrl,
+//             status: 'streaming',
+//             loop_enabled: true,
+//             auto_segment_cleanup: true,
+//             max_segments: config.maxSegments,
+//             active_streams: activeStreamCount + 1,
+//             max_streams: config.maxConcurrentStreams
+//         });
+
+//     } catch (error) {
+//         console.error('Error processing upload:', error);
+//         res.status(500).json({ error: 'Internal server error' });
+//     }
+// });
+
+app.post('/upload', upload.array('file', 2), (req, res) => {
     try {
         const { name } = req.body;
-        const file = req.file;
+        const files = req.files;
 
         if (!name || !name.trim()) {
             return res.status(400).json({ error: 'Stream name cannot be empty' });
         }
 
-        if (!file) {
-            return res.status(400).json({ error: 'No file uploaded' });
+        if (!files || files.length !== 2) {
+            return res.status(400).json({ error: 'Upload exactly 2 videos' });
         }
 
-        // Check concurrent stream limit
         const activeStreamCount = Object.keys(activeStreams).length;
         if (activeStreamCount >= config.maxConcurrentStreams) {
             return res.status(429).json({
-                error: `Maximum ${config.maxConcurrentStreams} concurrent streams allowed. Please stop a stream first.`
+                error: `Maximum ${config.maxConcurrentStreams} concurrent streams allowed`
             });
         }
 
         const streamId = `${sanitizeFilename(name)}_${uuidv4().substring(0, 8)}`;
-        const inputPath = file.path;
         const outputPath = path.join(config.outputFolder, streamId);
 
-        // Create output directory
         if (fs.existsSync(outputPath)) {
             fs.rmSync(outputPath, { recursive: true, force: true });
         }
         fs.mkdirSync(outputPath, { recursive: true });
 
-        // Start FFmpeg process
-        const ffmpegProcess = startFFmpegStream(inputPath, outputPath);
+        const mergedFile = path.join(
+            config.uploadFolder,
+            `${streamId}_merged.mp4`
+        );
 
-        activeStreams[streamId] = {
-            process: ffmpegProcess,
-            outputPath: outputPath,
-            inputPath: inputPath,
-            startTime: Date.now(),
-            cleanerInterval: null
-        };
-
-        // Setup automatic segment cleaner
-        setTimeout(() => {
-            setupSegmentCleaner(streamId, outputPath);
-        }, 30000); // Start cleaning after 30 seconds
-
-        ffmpegProcess.on('error', (error) => {
-            console.error(`FFmpeg error for ${streamId}:`, error);
-            if (activeStreams[streamId] && activeStreams[streamId].cleanerInterval) {
-                clearInterval(activeStreams[streamId].cleanerInterval);
-            }
-            delete activeStreams[streamId];
-        });
-
-        ffmpegProcess.on('exit', (code) => {
-            console.log(`FFmpeg process for ${streamId} exited with code ${code}`);
-            if (activeStreams[streamId]) {
-                if (activeStreams[streamId].cleanerInterval) {
-                    clearInterval(activeStreams[streamId].cleanerInterval);
+        mergeVideos(
+            files.map(f => f.path),
+            mergedFile,
+            (ok) => {
+                if (!ok) {
+                    return res.status(500).json({ error: 'Video merge failed' });
                 }
-                delete activeStreams[streamId];
+
+                // hapus file upload original
+                files.forEach(f => {
+                    if (fs.existsSync(f.path)) fs.unlinkSync(f.path);
+                });
+
+                const ffmpegProcess = startFFmpegStream(mergedFile, outputPath);
+
+                activeStreams[streamId] = {
+                    process: ffmpegProcess,
+                    outputPath,
+                    inputPath: mergedFile,
+                    startTime: Date.now(),
+                    cleanerInterval: null
+                };
+
+                setTimeout(() => {
+                    setupSegmentCleaner(streamId, outputPath);
+                }, 30000);
+
+                cleanupInputFile(mergedFile);
+
+                res.json({
+                    stream_id: streamId,
+                    stream_url: `/output/${streamId}/index.m3u8`,
+                    merged: true,
+                    loop_enabled: true
+                });
             }
-        });
+        );
 
-        // Schedule cleanup of input file
-        cleanupInputFile(inputPath);
-
-        const streamUrl = `/output/${streamId}/index.m3u8`;
-        console.log(`🔄 Loop stream started: ${streamId} (${activeStreamCount + 1}/${config.maxConcurrentStreams} active)`);
-
-        res.json({
-            stream_id: streamId,
-            stream_url: streamUrl,
-            status: 'streaming',
-            loop_enabled: true,
-            auto_segment_cleanup: true,
-            max_segments: config.maxSegments,
-            active_streams: activeStreamCount + 1,
-            max_streams: config.maxConcurrentStreams
-        });
-
-    } catch (error) {
-        console.error('Error processing upload:', error);
+    } catch (err) {
+        console.error(err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
+
 
 // Serve output files
 app.use('/output', express.static(config.outputFolder, {
