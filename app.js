@@ -98,6 +98,33 @@ function mergeVideos(inputFiles, mergedOutput, callback) {
     });
 }
 
+function mergeReencode(v1, v2, output, cb) {
+    const cmd = [
+        '-y',
+        '-i', v1,
+        '-i', v2,
+        '-filter_complex',
+        '[0:v]scale=1280:720,setsar=1[v0];' +
+        '[1:v]scale=1280:720,setsar=1[v1];' +
+        '[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]',
+        '-map', '[outv]',
+        '-map', '[outa]',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '23',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        output
+    ];
+
+    console.log('🎞️ Merge re-encode:\nffmpeg ' + cmd.join(' '));
+
+    const p = spawn('ffmpeg', cmd);
+
+    p.stderr.on('data', d => console.error('[merge]', d.toString()));
+
+    p.on('exit', code => cb(code === 0));
+}
 
 
 // Auto-delete old segments function
@@ -223,6 +250,8 @@ function cleanupInputFile(filePath) {
     }, 300000); // 5 minutes
 }
 
+let pendingMerge = {};
+
 // Routes
 app.get('/', (req, res) => {
     res.send(`
@@ -256,6 +285,7 @@ app.get('/', (req, res) => {
                 border-radius: 4px;
                 box-sizing: border-box;
             }
+            
             .btn {
                 padding: 10px 15px;
                 border: none;
@@ -333,6 +363,13 @@ app.get('/', (req, res) => {
                     <label for="file">Select Video:</label>
                     <input type="file" name="file" id="file" accept="video/*" multiple required>
                     <small>Upload 2 video (urutan = urutan gabung)</small>
+                    <input type="file" id="v1">
+                    <button onclick="upload1()">Upload Video 1</button>
+
+                    <input type="file" id="v2">
+                    <input type="text" id="name" placeholder="Stream name">
+                    <button onclick="upload2()">Upload Video 2 & Start</button>
+
                 </div>
                 <button type="submit" class="btn btn-primary">📤 Upload and Start Stream</button>
             </form>
@@ -373,6 +410,27 @@ app.get('/', (req, res) => {
                 } catch (error) {
                     showStatus('Failed to load streams: ' + error.message, 'error');
                 }
+            }
+            let mergeId = null;
+            
+            async function upload1() {
+                const f = new FormData();
+                f.append('file', v1.files[0]);
+
+                const r = await fetch('/upload/part1', { method:'POST', body:f });
+                const j = await r.json();
+                mergeId = j.merge_id;
+                alert('Video 1 OK, lanjut video 2');
+            }
+
+            async function upload2() {
+                const f = new FormData();
+                f.append('file', v2.files[0]);
+                f.append('merge_id', mergeId);
+                f.append('name', name.value);
+
+                await fetch('/upload/part2', { method:'POST', body:f });
+                alert('Stream started');
             }
 
             function displayStreams(streams) {
@@ -609,6 +667,63 @@ app.get('/', (req, res) => {
 //         res.status(500).json({ error: 'Internal server error' });
 //     }
 // });
+
+app.post('/upload/part1', upload.single('file'), (req, res) => {
+    const id = uuidv4().substring(0, 8);
+    pendingMerge[id] = { v1: req.file.path };
+
+    res.json({
+        merge_id: id,
+        message: 'Video 1 uploaded, now uplo                            ad video 2'
+    });
+});
+
+app.post('/upload/part2', upload.single('file'), (req, res) => {
+    const { merge_id, name } = req.body;
+
+    if (!pendingMerge[merge_id]) {
+        return res.status(400).json({ error: 'Invalid merge ID' });
+    }
+
+    const v1 = pendingMerge[merge_id].v1;
+    const v2 = req.file.path;
+
+    const streamId = `${sanitizeFilename(name)}_${uuidv4().substring(0,8)}`;
+    const outputPath = path.join(config.outputFolder, streamId);
+    fs.mkdirSync(outputPath, { recursive: true });
+
+    const mergedFile = path.join(config.uploadFolder, `${streamId}_merged.mp4`);
+
+    mergeReencode(v1, v2, mergedFile, ok => {
+        if (!ok) return res.status(500).json({ error: 'Merge failed' });
+
+        // hapus upload original
+        fs.unlinkSync(v1);
+        fs.unlinkSync(v2);
+        delete pendingMerge[merge_id];
+
+        const ff = startFFmpegStream(mergedFile, outputPath);
+
+        activeStreams[streamId] = {
+            process: ff,
+            outputPath,
+            inputPath: mergedFile,
+            startTime: Date.now(),
+            cleanerInterval: null
+        };
+
+        setTimeout(() => setupSegmentCleaner(streamId, outputPath), 30000);
+        cleanupInputFile(mergedFile);
+
+        res.json({
+            stream_id: streamId,
+            stream_url: `/output/${streamId}/index.m3u8`,
+            merged: true,
+            mode: 'reencode'
+        });
+    });
+});
+
 
 app.post('/upload', upload.array('file', 2), (req, res) => {
     try {
