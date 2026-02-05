@@ -9,10 +9,37 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 const PORT = 9001;
 
+const LOG_DIR = 'logs';
+const ERROR_LOG = path.join(LOG_DIR, 'error.log');
+const APP_LOG = path.join(LOG_DIR, 'app.log');
+
+if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+function logError(message, error = null) {
+    const time = new Date().toISOString();
+    const detail = error ? (error.stack || error.toString()) : '';
+    const line = `[${time}] ERROR: ${message}\n${detail}\n\n`;
+    fs.appendFileSync(ERROR_LOG, line);
+    console.error(line);
+}
+
+function logInfo(message) {
+    const time = new Date().toISOString();
+    const line = `[${time}] INFO: ${message}\n`;
+    fs.appendFileSync(APP_LOG, line);
+    console.log(line.trim());
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+app.use((err, req, res, next) => {
+    logError(`HTTP ${req.method} ${req.url}`, err);
+    res.status(500).json({ error: 'Server error' });
+});
 
 // Configuration
 const config = {
@@ -163,15 +190,23 @@ function startFFmpegStream(inputPath, outputPath) {
     const ffmpegProcess = spawn('ffmpeg', cmd);
 
     ffmpegProcess.stdout.on('data', (data) => {
-        console.log(`[FFmpeg stdout]: ${data}`);
+        logInfo(`[FFmpeg ${ffmpegProcess.pid}] ${data.toString().trim()}`);
     });
 
     ffmpegProcess.stderr.on('data', (data) => {
-        console.error(`[FFmpeg stderr]: ${data}`);
+        logError(`[FFmpeg ${ffmpegProcess.pid}] stderr`, data.toString());
     });
 
     ffmpegProcess.on('exit', (code) => {
-        console.log(`⚠️ FFmpeg process exited with code ${code}`);
+        logInfo(`⚠️ FFmpeg process exited with code ${code}`);
+    });
+
+    ffmpegProcess.on('exit', (code, signal) => {
+        logError(`FFmpeg exited`, `code=${code}, signal=${signal}`);
+    });
+
+    ffmpegProcess.on('error', (err) => {
+        logError('FFmpeg spawn failed', err);
     });
 
     // Optional: reduce process priority
@@ -576,9 +611,10 @@ app.post('/upload', upload.single('file'), (req, res) => {
         });
 
     } catch (error) {
-        console.error('Error processing upload:', error);
+        logError('Upload processing failed', error);
         res.status(500).json({ error: 'Internal server error' });
     }
+
 });
 
 // Serve output files
@@ -770,6 +806,15 @@ app.get('/streams/:streamId/info', (req, res) => {
         segments: segmentFiles,
         stream_url: playlistExists ? `/output/${streamId}/index.m3u8` : null
     });
+});
+
+process.on('uncaughtException', (err) => {
+    logError('UNCAUGHT EXCEPTION', err);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    logError('UNHANDLED PROMISE REJECTION', reason);
 });
 
 // Start server
