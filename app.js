@@ -22,7 +22,7 @@ const config = {
     allowedExtensions: ['.mp4', '.avi', '.mov', '.mkv', '.webm'],
     hlsTime: 6,          // 6 second segments
     hlsListSize: 10,     // Keep 10 segments (increased for better looping)
-    maxSegments: 10,     // Maximum segments before auto-delete
+//    maxSegments: 10,     // Maximum segments before auto-delete
     maxConcurrentStreams: 10
 };
 
@@ -69,54 +69,54 @@ function sanitizeFilename(filename) {
 }
 
 // Auto-delete old segments function
-function setupSegmentCleaner(streamId, outputPath) {
-    const cleanerInterval = setInterval(() => {
-        if (!activeStreams[streamId]) {
-            clearInterval(cleanerInterval);
-            return;
-        }
+// function setupSegmentCleaner(streamId, outputPath) {
+//     const cleanerInterval = setInterval(() => {
+//         if (!activeStreams[streamId]) {
+//             clearInterval(cleanerInterval);
+//             return;
+//         }
 
-        try {
-            if (!fs.existsSync(outputPath)) {
-                clearInterval(cleanerInterval);
-                return;
-            }
+//         try {
+//             if (!fs.existsSync(outputPath)) {
+//                 clearInterval(cleanerInterval);
+//                 return;
+//             }
 
-            const files = fs.readdirSync(outputPath);
-            const segmentFiles = files
-                .filter(file => file.endsWith('.ts') && file.startsWith('segment_'))
-                .map(file => {
-                    const filePath = path.join(outputPath, file);
-                    const stats = fs.statSync(filePath);
-                    return {
-                        name: file,
-                        path: filePath,
-                        mtime: stats.mtime.getTime()
-                    };
-                })
-                .sort((a, b) => a.mtime - b.mtime); // Sort by creation time
+//             const files = fs.readdirSync(outputPath);
+//             const segmentFiles = files
+//                 .filter(file => file.endsWith('.ts') && file.startsWith('segment_'))
+//                 .map(file => {
+//                     const filePath = path.join(outputPath, file);
+//                     const stats = fs.statSync(filePath);
+//                     return {
+//                         name: file,
+//                         path: filePath,
+//                         mtime: stats.mtime.getTime()
+//                     };
+//                 })
+//                 .sort((a, b) => a.mtime - b.mtime); // Sort by creation time
 
-            // Keep only the latest 10 segments
-            if (segmentFiles.length > config.maxSegments) {
-                const filesToDelete = segmentFiles.slice(0, segmentFiles.length - config.maxSegments);
-                filesToDelete.forEach(file => {
-                    try {
-                        fs.unlinkSync(file.path);
-                        console.log(`Auto-deleted old segment: ${file.name} for stream ${streamId}`);
-                    } catch (err) {
-                        console.error(`Error deleting segment ${file.name}:`, err.message);
-                    }
-                });
-            }
-        } catch (error) {
-            console.error(`Error in segment cleaner for ${streamId}:`, error.message);
-        }
-    }, 10000); // Check every 10 seconds
+//             // Keep only the latest 10 segments
+//             if (segmentFiles.length > config.maxSegments) {
+//                 const filesToDelete = segmentFiles.slice(0, segmentFiles.length - config.maxSegments);
+//                 filesToDelete.forEach(file => {
+//                     try {
+//                         fs.unlinkSync(file.path);
+//                         console.log(`Auto-deleted old segment: ${file.name} for stream ${streamId}`);
+//                     } catch (err) {
+//                         console.error(`Error deleting segment ${file.name}:`, err.message);
+//                     }
+//                 });
+//             }
+//         } catch (error) {
+//             console.error(`Error in segment cleaner for ${streamId}:`, error.message);
+//         }
+//     }, 10000); // Check every 10 seconds
 
-    // Store the interval ID for cleanup
-    if (activeStreams[streamId]) {
-        activeStreams[streamId].cleanerInterval = cleanerInterval;
-    }
+//     // Store the interval ID for cleanup
+//     if (activeStreams[streamId]) {
+//         activeStreams[streamId].cleanerInterval = cleanerInterval;
+//     }
 }
 
 // Tambahkan logging stdout dan stderr dari FFmpeg ke dalam fungsi
@@ -128,7 +128,9 @@ function startFFmpegStream(inputPath, outputPath) {
         '-y',
         '-stream_loop', '-1',
         '-i', inputPath,
-        '-c:v', 'libx264',
+        // '-c:v', 'libx264',
+        '-c:v', 'copy',
+        '-c:a', 'copy',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-crf', '28',
@@ -141,14 +143,16 @@ function startFFmpegStream(inputPath, outputPath) {
         '-g', '48',
         '-sc_threshold', '0',
         '-threads', '2',
-        '-c:a', 'aac',
+        // '-c:a', 'aac',
         '-b:a', '96k',
         '-ac', '2',
         '-ar', '44100',
         '-f', 'hls',
         '-hls_time', '6',
         '-hls_list_size', '10',
-        '-hls_flags', 'delete_segments+append_list+independent_segments',
+        '-hls_playlist_type', 'event',
+        // '-hls_flags', 'delete_segments+append_list+independent_segments',
+        '-hls_flags', 'delete_segments+independent_segments',
         '-hls_segment_type', 'mpegts',
         '-hls_segment_filename', outputSegmentPath,
         outputPlaylistPath
@@ -183,12 +187,12 @@ function startFFmpegStream(inputPath, outputPath) {
 }
 
 function cleanupInputFile(filePath) {
-    setTimeout(() => {
-        if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-            console.log(`Cleaned up input file: ${filePath}`);
-        }
-    }, 300000); // 5 minutes
+    // setTimeout(() => {
+    //     if (fs.existsSync(filePath)) {
+    //         fs.unlinkSync(filePath);
+    //         console.log(`Cleaned up input file: ${filePath}`);
+    //     }
+    // }, 300000); // 5 minutes
 }
 
 // Routes
@@ -528,7 +532,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
             outputPath: outputPath,
             inputPath: inputPath,
             startTime: Date.now(),
-            cleanerInterval: null
+            // cleanerInterval: null
         };
 
         // Setup automatic segment cleaner
@@ -608,9 +612,9 @@ app.delete('/streams/:streamId', (req, res) => {
     const stream = activeStreams[streamId];
 
     // Stop segment cleaner
-    if (stream.cleanerInterval) {
-        clearInterval(stream.cleanerInterval);
-    }
+    // if (stream.cleanerInterval) {
+    //     clearInterval(stream.cleanerInterval);
+    // }
 
     // Kill FFmpeg process
     if (stream.process && !stream.process.killed) {
@@ -638,9 +642,9 @@ app.delete('/streams/all', (req, res) => {
 
     for (const [streamId, stream] of Object.entries(activeStreams)) {
         // Stop segment cleaner
-        if (stream.cleanerInterval) {
-            clearInterval(stream.cleanerInterval);
-        }
+        // if (stream.cleanerInterval) {
+        //     clearInterval(stream.cleanerInterval);
+        // }
 
         if (stream.process && !stream.process.killed) {
             stream.process.kill('SIGTERM');
@@ -671,9 +675,9 @@ app.post('/cleanup', (req, res) => {
     try {
         // Stop all streams first
         for (const [streamId, stream] of Object.entries(activeStreams)) {
-            if (stream.cleanerInterval) {
-                clearInterval(stream.cleanerInterval);
-            }
+            // if (stream.cleanerInterval) {
+            //     clearInterval(stream.cleanerInterval);
+            // }
             if (stream.process && !stream.process.killed) {
                 stream.process.kill('SIGKILL');
             }
