@@ -117,7 +117,7 @@ function sanitizeFilename(filename) {
 //     if (activeStreams[streamId]) {
 //         activeStreams[streamId].cleanerInterval = cleanerInterval;
 //     }
-}
+// }
 
 // Tambahkan logging stdout dan stderr dari FFmpeg ke dalam fungsi
 function startFFmpegStream(inputPath, outputPath) {
